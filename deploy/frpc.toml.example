@@ -1,0 +1,11 @@
+serverAddr = "frp.aim888888.xyz"
+serverPort = 7000
+auth.token = "CHANGE_ME_FRP_TOKEN"
+transport.tls.enable = true
+
+[[proxies]]
+name = "task-gantt"
+type = "http"
+localIP = "task-gantt"
+localPort = 8010
+customDomains = ["gantt.aim888888.xyz"]

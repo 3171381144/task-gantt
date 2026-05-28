@@ -1,0 +1,331 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Task Gantt Chart</title>
+  <link rel="stylesheet" href="/styles.css?v=portal-blue-20260425" />
+</head>
+<body>
+  <aside class="sidebar-shell">
+    <div class="brand-panel">
+      <p class="eyebrow">Planning Board</p>
+      <h1>&#20219;&#21153;&#25490;&#26399;</h1>
+    </div>
+
+    <section class="sidebar-panel">
+      <div class="section-head sidebar-head">
+        <div>
+          <h2>&#39033;&#30446;&#21015;&#34920;</h2>
+        </div>
+      </div>
+      <div class="sidebar-list-stack">
+        <div id="project-list" class="project-list"></div>
+        <section class="sidebar-history">
+          <div class="sidebar-subhead">
+            <button type="button" id="history-toggle-btn" class="sidebar-toggle-button" aria-expanded="false">
+              <span>&#21382;&#21490;&#39033;&#30446;</span>
+              <span id="history-toggle-count" class="history-count">0</span>
+            </button>
+          </div>
+          <div id="deleted-project-wrap" class="deleted-project-wrap" hidden>
+            <div id="deleted-project-list" class="project-list deleted-project-list"></div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </aside>
+
+  <div class="main-shell">
+    <header class="topbar panel">
+      <div class="topbar-copy">
+        <p class="eyebrow">Planning Console</p>
+        <h2>任务甘特图</h2>
+      </div>
+      <div class="top-actions">
+        <button id="open-project-dialog" class="primary">新建项目</button>
+        <button id="open-import-dialog">&#23548;&#20837;&#25991;&#20214;/&#25991;&#26412;</button>
+        <button id="open-meeting-dialog">&#20250;&#35758;&#26356;&#26032;</button>
+        <button id="open-snapshot-dialog">&#21382;&#21490;&#22238;&#36864;</button>
+        <button id="add-task-btn">新增任务</button>
+        <button id="reschedule-btn">重算排期</button>
+        <button type="button" data-export="xlsx">导出 XLSX</button>
+        <button type="button" id="export-all-xlsx-btn">&#23548;&#20986;&#20840;&#37096; XLSX</button>
+      </div>
+    </header>
+
+    <main class="content-shell">
+      <section class="panel summary-panel">
+        <div id="project-summary"></div>
+      </section>
+
+      <section class="panel gantt-panel">
+        <div class="section-head">
+          <div>
+            <h2>甘特图</h2>
+          </div>
+        </div>
+        <div id="gantt-meta" class="meta-strip"></div>
+        <div id="gantt-viewport" class="gantt-viewport">
+          <svg id="gantt-svg"></svg>
+        </div>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="section-head">
+          <div>
+            <h2>任务清单</h2>
+          </div>
+        </div>
+        <div id="table-meta" class="meta-strip compact"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>任务</th>
+                <th>状态</th>
+                <th>负责人</th>
+                <th>开始</th>
+                <th>结束</th>
+                <th>预估</th>
+                <th>进度</th>
+                <th>依赖</th>
+              </tr>
+            </thead>
+            <tbody id="task-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <details id="task-editor-details" class="panel editor-panel">
+        <summary>编辑当前任务</summary>
+        <div id="editor-state" class="editor-state"></div>
+        <form id="task-form" class="task-form">
+          <input name="task_id" type="hidden" />
+          <div class="form-grid cols-2">
+            <label>
+              任务标题
+              <input name="title" type="text" required />
+            </label>
+            <label>
+              负责人
+              <input name="owner" type="text" />
+            </label>
+          </div>
+          <label>
+            描述
+            <textarea name="description" rows="3"></textarea>
+          </label>
+          <div class="form-grid cols-4">
+            <label>
+              状态
+              <select name="status">
+                <option value="planned">计划中</option>
+                <option value="in_progress">进行中</option>
+                <option value="blocked">阻塞</option>
+                <option value="done">已完成</option>
+              </select>
+            </label>
+            <label>
+              优先级
+              <input name="priority" type="number" min="1" max="5" value="2" />
+            </label>
+            <label>
+              复杂度
+              <input name="complexity" type="number" min="1" max="5" value="3" />
+            </label>
+            <label>
+              进度
+              <input name="progress" type="number" min="0" max="100" value="0" />
+            </label>
+          </div>
+          <div class="form-grid cols-4">
+            <label>
+              预估工时
+              <input name="estimate_hours" type="number" min="0" step="0.5" value="0" />
+            </label>
+            <label>
+              实际工时
+              <input name="actual_hours" type="number" min="0" step="0.5" value="0" />
+            </label>
+            <label>
+              估时置信度
+              <input name="confidence" type="number" min="0" max="1" step="0.01" value="0.56" />
+            </label>
+            <label>
+              依赖 ID
+              <input name="dependency_ids" type="text" placeholder="例如 1,2" />
+            </label>
+          </div>
+          <div class="form-grid cols-2">
+            <label>
+              开始日期
+              <input name="start_date" type="date" />
+            </label>
+            <label>
+              结束日期
+              <input name="end_date" type="date" />
+            </label>
+          </div>
+          <label>
+            估时依据
+            <input name="estimate_basis" type="text" />
+          </label>
+          <label>
+            备注
+            <textarea name="notes" rows="3"></textarea>
+          </label>
+          <div class="button-row editor-actions">
+            <button type="submit" class="primary">保存</button>
+            <button type="button" id="save-reschedule-btn">保存并重算</button>
+            <button type="button" id="delete-task-btn" class="danger">删除</button>
+          </div>
+        </form>
+      </details>
+    </main>
+  </div>
+
+  <dialog id="project-dialog" class="modal">
+    <form id="project-form" class="modal-form" method="dialog">
+      <div class="modal-head">
+        <h2>新建项目</h2>
+        <button type="button" class="ghost-button" data-close-dialog="project-dialog">关闭</button>
+      </div>
+      <label>
+        项目名称
+        <input name="name" type="text" placeholder="例如：毕业设计排期" required />
+      </label>
+      <label>
+        &#39033;&#30446;&#25551;&#36848; / &#36335;&#32447;&#22270;&#25991;&#26412;
+        <textarea name="description" rows="6" placeholder="&#21487;&#30452;&#25509;&#31896;&#36148; roadmap / gantt / &#20998;&#38454;&#27573;&#20219;&#21153;&#35828;&#26126;&#65292;LLM &#20250;&#35299;&#26512;&#21518;&#30452;&#25509;&#21019;&#24314;&#39033;&#30446;&#24182;&#29983;&#25104;&#21021;&#22987;&#20219;&#21153;"></textarea>
+      </label>
+      <p class="field-note">&#26234;&#33021;&#21019;&#24314;&#20250;&#25226;&#36825;&#37324;&#30340;&#25991;&#26412;&#30452;&#25509;&#35299;&#26512;&#25104;&#20219;&#21153;&#24182;&#23548;&#20837;&#26032;&#39033;&#30446;&#65307;&#22914;&#26524;&#21482;&#24819;&#20808;&#24314;&#19968;&#20010;&#31354;&#22771;&#39033;&#30446;&#65292;&#20877;&#28857;&#21491;&#20391;&#30340;&#8220;&#21019;&#24314;&#31354;&#39033;&#30446;&#8221;&#12290;</p>
+      <div class="form-grid cols-2">
+        <label>
+          开始日期
+          <input name="start_date" type="date" required />
+        </label>
+        <label>
+          截止日期
+          <input name="due_date" type="date" />
+        </label>
+      </div>
+      <div class="button-row">
+        <button type="button" class="primary" data-project-mode="smart">&#35299;&#26512;&#25991;&#26412;&#24182;&#21019;&#24314;&#39033;&#30446;</button>
+        <button type="button" data-project-mode="empty">创建空项目</button>
+      </div>
+      <section id="llm-progress-panel" class="llm-progress-panel" hidden aria-live="polite">
+        <div class="llm-progress-head">
+          <strong id="llm-progress-title">&#27491;&#22312;&#20934;&#22791;&#39033;&#30446;&#20998;&#26512;</strong>
+          <span id="llm-progress-percent">0%</span>
+        </div>
+        <div class="llm-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="llm-progress-fill"></span>
+        </div>
+        <p id="llm-progress-text" class="llm-progress-text">&#20934;&#22791;&#25552;&#20132;&#39033;&#30446;&#25551;&#36848;&#8230;</p>
+        <div class="llm-progress-steps">
+          <span class="progress-step" data-progress-step="submit">&#25552;&#20132;&#25551;&#36848;</span>
+          <span class="progress-step" data-progress-step="llm">&#35843;&#29992;&#27169;&#22411;</span>
+          <span class="progress-step" data-progress-step="shape">&#25972;&#29702;&#20219;&#21153;</span>
+          <span class="progress-step" data-progress-step="persist">&#20889;&#20837;&#39033;&#30446;</span>
+        </div>
+      </section>
+    </form>
+  </dialog>
+
+  <dialog id="import-dialog" class="modal">
+    <form id="import-form" class="modal-form" method="dialog">
+      <div class="modal-head">
+        <h2>&#23548;&#20837;&#20219;&#21153;</h2>
+        <button type="button" class="ghost-button" data-close-dialog="import-dialog">&#20851;&#38381;</button>
+      </div>
+      <p class="field-note">&#19978;&#20256;&#25991;&#20214;&#20250;&#25353;&#34920;&#26684;&#23548;&#20837;&#65307;&#31896;&#36148;&#25991;&#26412;&#20250;&#26234;&#33021;&#35299;&#26512;&#21518;&#36861;&#21152;&#21040;&#24403;&#21069;&#39033;&#30446;&#12290;</p>
+      <label>
+        &#26234;&#33021;&#35299;&#26512;&#25991;&#26412;
+        <textarea name="smart_text" rows="6" placeholder="Paste gantt / roadmap / free text here"></textarea>
+      </label>
+      <label>
+        &#26032;&#39033;&#30446;&#21517;&#31216;
+        <input name="project_name" type="text" placeholder="&#20165;&#25991;&#20214;&#23548;&#20837;&#26032;&#24314;&#39033;&#30446;&#26102;&#20351;&#29992;&#65307;&#30041;&#31354;&#21017;&#23548;&#20837;&#21040;&#24403;&#21069;&#39033;&#30446;" />
+      </label>
+      <label>
+        &#20219;&#21153;&#25991;&#20214;
+        <input name="import_file" type="file" accept=".csv,.json,.xlsx" />
+      </label>
+      <div class="form-grid cols-2">
+        <label>
+          &#23548;&#20837;&#24320;&#22987;&#26085;&#26399;
+          <input name="start_date" type="date" />
+        </label>
+        <label class="checkbox-row">
+          <input name="replace_existing" type="checkbox" />
+          &#35206;&#30422;&#24403;&#21069;&#39033;&#30446;&#29616;&#26377;&#20219;&#21153;
+        </label>
+      </div>
+      <div class="button-row import-actions">
+        <button type="button" id="smart-import-btn" class="primary" data-import-mode="smart">&#26234;&#33021;&#35299;&#26512;&#24182;&#36861;&#21152;&#21040;&#24403;&#21069;&#39033;&#30446;</button>
+        <button type="submit" data-import-mode="file">&#23548;&#20837;&#25991;&#20214;</button>
+      </div>
+      <section id="import-progress-panel" class="llm-progress-panel" hidden aria-live="polite">
+        <div class="llm-progress-head">
+          <strong id="import-progress-title">&#27491;&#22312;&#20934;&#22791;&#35299;&#26512;&#25991;&#26412;</strong>
+          <span id="import-progress-percent">0%</span>
+        </div>
+        <div id="import-progress-bar" class="llm-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span id="import-progress-fill"></span>
+        </div>
+        <p id="import-progress-text" class="llm-progress-text">&#20934;&#22791;&#25552;&#20132;&#25991;&#26412;&#35299;&#26512;&#8230;</p>
+        <div class="llm-progress-steps">
+          <span class="progress-step" data-import-progress-step="submit">&#25552;&#20132;&#25991;&#26412;</span>
+          <span class="progress-step" data-import-progress-step="llm">&#35843;&#29992;&#27169;&#22411;</span>
+          <span class="progress-step" data-import-progress-step="shape">&#25972;&#29702;&#20219;&#21153;</span>
+          <span class="progress-step" data-import-progress-step="persist">&#20889;&#20837;&#29976;&#29305;&#22270;</span>
+        </div>
+      </section>
+    </form>
+  </dialog>
+
+
+  <dialog id="meeting-dialog" class="modal">
+    <form id="meeting-form" class="modal-form" method="dialog">
+      <div class="modal-head">
+        <h2>&#20250;&#35758;&#32426;&#35201;&#26356;&#26032;&#36827;&#24230;</h2>
+        <button type="button" class="ghost-button" data-close-dialog="meeting-dialog">&#20851;&#38381;</button>
+      </div>
+      <p class="field-note">&#27599;&#21608;&#20250;&#21518;&#25226;&#20250;&#35758;&#32426;&#35201;&#31896;&#36148;&#21040;&#36825;&#37324;&#65292;LLM &#20250;&#23545;&#29031;&#24403;&#21069;&#39033;&#30446;&#20219;&#21153;&#33258;&#21160;&#26356;&#26032;&#36827;&#24230;&#12289;&#29366;&#24577;&#21644;&#22791;&#27880;&#12290;</p>
+      <label>
+        &#20250;&#35758;&#32426;&#35201;
+        <textarea name="meeting_text" rows="10" placeholder="&#31896;&#36148;&#26412;&#27425;&#21608;&#20250;&#30340;&#35760;&#24405;&#12289;&#20915;&#35758;&#21644;&#34892;&#21160;&#39033;"></textarea>
+      </label>
+      <label class="checkbox-row">
+        <input name="auto_schedule" type="checkbox" checked />
+        &#26356;&#26032;&#21518;&#33258;&#21160;&#37325;&#31639;&#25490;&#26399;
+      </label>
+      <div class="button-row meeting-actions">
+        <button type="submit" class="primary" data-meeting-mode="update">&#35299;&#26512;&#24182;&#26356;&#26032;&#24403;&#21069;&#39033;&#30446;</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="snapshot-dialog" class="modal">
+    <form id="snapshot-form" class="modal-form" method="dialog">
+      <div class="modal-head">
+        <h2>&#21382;&#21490;&#24555;&#29031;&#22238;&#36864;</h2>
+        <button type="button" class="ghost-button" data-close-dialog="snapshot-dialog">&#20851;&#38381;</button>
+      </div>
+      <p class="field-note">&#31995;&#32479;&#20250;&#22312;&#21019;&#24314;&#39033;&#30446;&#12289;&#20462;&#25913;&#20219;&#21153;&#12289;&#23548;&#20837;&#12289;&#20250;&#35758;&#26356;&#26032;&#21644;&#37325;&#31639;&#25490;&#26399;&#21518;&#33258;&#21160;&#35760;&#24405;&#19968;&#20010;&#24555;&#29031;&#12290;</p>
+      <div id="snapshot-list" class="snapshot-list"></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast"></div>
+  <script src="/app.js?v=portal-blue-20260425"></script>
+</body>
+</html>
+
+
+
+
+
+
+
+

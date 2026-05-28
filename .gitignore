@@ -1,0 +1,22 @@
+.env
+*.env
+__pycache__/
+*.py[cod]
+
+# Runtime data and logs
+data/
+logs/
+server.pid
+
+# Local tunnel/client secrets
+deploy/frpc.toml
+
+# Local-only binaries and generated media
+tools/
+video/
+
+# Local editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

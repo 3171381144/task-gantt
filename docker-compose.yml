@@ -1,0 +1,35 @@
+services:
+  task-gantt:
+    build: .
+    container_name: task-gantt
+    environment:
+      TASK_GANTT_HOST: 0.0.0.0
+      TASK_GANTT_PORT: "8010"
+      TASK_GANTT_DATA_DIR: /app/data
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      SILICONFLOW_BASE_URL: ${SILICONFLOW_BASE_URL:-https://api.siliconflow.cn/v1/chat/completions}
+      SILICONFLOW_MODEL: ${SILICONFLOW_MODEL:-deepseek-ai/DeepSeek-V3.2}
+      SILICONFLOW_TIMEOUT_SECONDS: ${SILICONFLOW_TIMEOUT_SECONDS:-45}
+    volumes:
+      - task_gantt_data:/app/data
+    ports:
+      - "127.0.0.1:8010:8010"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8010/', timeout=2).read(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frpc:
+    image: ghcr.io/fatedier/frpc:v0.65.0
+    container_name: task-gantt-frpc
+    command: ["-c", "/etc/frp/frpc.toml"]
+    volumes:
+      - ./deploy/frpc.toml:/etc/frp/frpc.toml:ro
+    depends_on:
+      - task-gantt
+    restart: unless-stopped
+
+volumes:
+  task_gantt_data:
