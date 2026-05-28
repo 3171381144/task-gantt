@@ -20,3 +20,8 @@ video/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local verification artifacts
+.codex-*.pid
+.codex-*.job
+debug.log

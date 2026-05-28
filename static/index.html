@@ -1,10 +1,10 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Task Gantt Chart</title>
-  <link rel="stylesheet" href="/styles.css?v=portal-blue-20260425" />
+  <link rel="stylesheet" href="/styles.css?v=onboarding-20260528" />
 </head>
 <body>
   <aside class="sidebar-shell">
@@ -44,6 +44,7 @@
       </div>
       <div class="top-actions">
         <button id="open-project-dialog" class="primary">新建项目</button>
+        <button id="open-onboarding-btn" type="button">新手指引</button>
         <button id="open-import-dialog">&#23548;&#20837;&#25991;&#20214;/&#25991;&#26412;</button>
         <button id="open-meeting-dialog">&#20250;&#35758;&#26356;&#26032;</button>
         <button id="open-snapshot-dialog">&#21382;&#21490;&#22238;&#36864;</button>
@@ -317,8 +318,29 @@
       <div id="snapshot-list" class="snapshot-list"></div>
     </form>
   </dialog>
+  <div id="onboarding-layer" class="onboarding-layer" hidden aria-hidden="true">
+    <div class="onboarding-backdrop"></div>
+    <div id="onboarding-highlight" class="onboarding-highlight"></div>
+    <section id="onboarding-card" class="onboarding-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+      <div class="onboarding-card-head">
+        <span id="onboarding-count" class="onboarding-count">1 / 6</span>
+        <button id="onboarding-close" class="ghost-button onboarding-icon-button" type="button" aria-label="关闭新手指引">关闭</button>
+      </div>
+      <h2 id="onboarding-title">快速熟悉任务甘特图</h2>
+      <p id="onboarding-copy" class="onboarding-copy"></p>
+      <div id="onboarding-tip" class="onboarding-tip"></div>
+      <div class="onboarding-progress" aria-hidden="true">
+        <span id="onboarding-progress-fill"></span>
+      </div>
+      <div class="onboarding-actions">
+        <button id="onboarding-skip" type="button">跳过</button>
+        <button id="onboarding-prev" type="button">上一步</button>
+        <button id="onboarding-next" class="primary" type="button">下一步</button>
+      </div>
+    </section>
+  </div>
   <div id="toast" class="toast"></div>
-  <script src="/app.js?v=portal-blue-20260425"></script>
+  <script src="/app.js?v=onboarding-20260528"></script>
 </body>
 </html>
 

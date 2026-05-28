@@ -1,10 +1,56 @@
-﻿const ROW_HEIGHT = 50;
+const ROW_HEIGHT = 50;
 const HEADER_HEIGHT = 84;
 const MONTH_HEADER_Y = 10;
 const MONTH_HEADER_HEIGHT = 16;
 const DAY_HEADER_Y = 32;
 const DAY_HEADER_HEIGHT = 34;
 
+const ONBOARDING_STORAGE_KEY = "task-gantt:onboarding:v1";
+
+const ONBOARDING_STEPS = [
+  {
+    target: ".sidebar-panel",
+    title: "先从左侧选项目",
+    copy: "这里是你能访问的项目列表。点击一个项目后，右侧会同步显示项目概览、甘特图和任务清单。",
+    tip: "如果项目很多，历史项目会折叠在底部，不会打断当前工作。",
+    placement: "right",
+  },
+  {
+    target: ".top-actions",
+    title: "顶部是主要工作入口",
+    copy: "新建项目、导入文件或文本、会议更新、历史回退、导出，都集中在这里。日常使用通常从这里开始。",
+    tip: "第一次创建项目可以点“新建项目”，粘贴路线图后让模型自动拆任务。",
+    placement: "bottom",
+  },
+  {
+    target: ".summary-panel",
+    title: "先看项目状态，再决定动作",
+    copy: "项目概览会显示当前健康度、进度、时间范围和关键统计。进入页面后先看这里，能快速判断项目是否推进正常。",
+    tip: "如果发现延期或阻塞，再去任务清单里调整具体任务。",
+    placement: "bottom",
+  },
+  {
+    target: ".gantt-panel",
+    title: "甘特图负责看排期关系",
+    copy: "这里用时间轴展示任务跨度和依赖。你可以横向滚动看更远日期，点击甘特图中的任务条选择任务。",
+    tip: "修改任务日期或依赖后，点“重算排期”可以重新整理时间线。",
+    placement: "top",
+  },
+  {
+    target: ".table-panel",
+    title: "任务清单负责精确更新",
+    copy: "要更新进展时，先在任务清单点选一行，再到下方“编辑当前任务”里改状态、进度、负责人、工时或备注。",
+    tip: "单个任务进度建议在这里手动改，改完点“保存”或“保存并重算”。",
+    placement: "top",
+  },
+  {
+    target: "#open-meeting-dialog",
+    title: "周会后用会议更新批量推进",
+    copy: "如果要根据会议纪要更新项目进展，点击“会议更新”，粘贴周会记录，系统会对照当前任务自动调整进度、状态和备注。",
+    tip: "如果是新增一批任务，用“导入文件/文本”；如果只是更新已有任务，用“会议更新”。",
+    placement: "bottom",
+  },
+];
 const PROJECT_ANALYSIS_STAGES = [
   { key: "submit", threshold: 0, label: "\u6b63\u5728\u63d0\u4ea4\u9879\u76ee\u63cf\u8ff0\u2026" },
   { key: "llm", threshold: 22, label: "\u6b63\u5728\u8c03\u7528 DeepSeek \u5206\u6790\u9879\u76ee\u8303\u56f4\u2026" },
@@ -30,6 +76,8 @@ const state = {
   importProgressTimer: null,
   importProgressValue: 0,
   importProgressActive: false,
+  onboardingActive: false,
+  onboardingIndex: 0,
 };
 
 const els = {};
@@ -43,6 +91,7 @@ async function init() {
   resetLlmProgress();
   bindEvents();
   await loadBootstrap();
+  scheduleFirstRunOnboarding();
 }
 
 function cacheElements() {
@@ -97,6 +146,19 @@ function cacheElements() {
   els.importProgressBar = document.getElementById("import-progress-bar");
   els.importProgressSteps = Array.from(document.querySelectorAll("[data-import-progress-step]"));
   els.snapshotList = document.getElementById("snapshot-list");
+  els.openOnboardingBtn = document.getElementById("open-onboarding-btn");
+  els.onboardingLayer = document.getElementById("onboarding-layer");
+  els.onboardingCard = document.getElementById("onboarding-card");
+  els.onboardingHighlight = document.getElementById("onboarding-highlight");
+  els.onboardingCount = document.getElementById("onboarding-count");
+  els.onboardingTitle = document.getElementById("onboarding-title");
+  els.onboardingCopy = document.getElementById("onboarding-copy");
+  els.onboardingTip = document.getElementById("onboarding-tip");
+  els.onboardingFill = document.getElementById("onboarding-progress-fill");
+  els.onboardingClose = document.getElementById("onboarding-close");
+  els.onboardingSkip = document.getElementById("onboarding-skip");
+  els.onboardingPrev = document.getElementById("onboarding-prev");
+  els.onboardingNext = document.getElementById("onboarding-next");
 }
 
 function setDefaultDates() {
@@ -108,15 +170,34 @@ function setDefaultDates() {
 }
 
 function bindEvents() {
-    els.openProjectDialog.addEventListener("click", () => openDialog(els.projectDialog));
+  els.openProjectDialog.addEventListener("click", () => openDialog(els.projectDialog));
   els.openImportDialog.addEventListener("click", () => openDialog(els.importDialog));
   els.openMeetingDialog.addEventListener("click", () => openDialog(els.meetingDialog));
   els.openSnapshotDialog.addEventListener("click", handleOpenSnapshotDialog);
+  if (els.openOnboardingBtn) {
+    els.openOnboardingBtn.addEventListener("click", () => startOnboarding({ force: true }));
+  }
 
   document.querySelectorAll("[data-close-dialog]").forEach((button) => {
     button.addEventListener("click", () => closeDialog(document.getElementById(button.dataset.closeDialog)));
   });
 
+
+  if (els.onboardingClose) {
+    els.onboardingClose.addEventListener("click", completeOnboarding);
+  }
+  if (els.onboardingSkip) {
+    els.onboardingSkip.addEventListener("click", completeOnboarding);
+  }
+  if (els.onboardingPrev) {
+    els.onboardingPrev.addEventListener("click", () => moveOnboarding(-1));
+  }
+  if (els.onboardingNext) {
+    els.onboardingNext.addEventListener("click", () => moveOnboarding(1));
+  }
+  document.addEventListener("keydown", handleOnboardingKeydown);
+  window.addEventListener("resize", debounce(positionOnboardingCard, 80));
+  window.addEventListener("scroll", debounce(positionOnboardingCard, 80), true);
   els.projectModeButtons.forEach((button) => {
     button.addEventListener("click", () => handleProjectCreate(button.dataset.projectMode));
   });
@@ -219,6 +300,175 @@ function bindEvents() {
   });
 }
 
+
+function hasSeenOnboarding() {
+  try {
+    return window.localStorage.getItem(ONBOARDING_STORAGE_KEY) === "done";
+  } catch (error) {
+    return true;
+  }
+}
+
+function markOnboardingSeen() {
+  try {
+    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, "done");
+  } catch (error) {
+    // LocalStorage can be blocked in strict browser modes. The guide still works for the current session.
+  }
+}
+
+function scheduleFirstRunOnboarding() {
+  if (hasSeenOnboarding()) {
+    return;
+  }
+  window.setTimeout(() => startOnboarding(), 520);
+}
+
+function startOnboarding(options = {}) {
+  if (!els.onboardingLayer) {
+    return;
+  }
+  if (!options.force && hasSeenOnboarding()) {
+    return;
+  }
+  closeOpenDialogsForOnboarding();
+  state.onboardingActive = true;
+  state.onboardingIndex = 0;
+  els.onboardingLayer.hidden = false;
+  els.onboardingLayer.setAttribute("aria-hidden", "false");
+  document.body.classList.add("onboarding-active");
+  renderOnboardingStep();
+}
+
+function closeOpenDialogsForOnboarding() {
+  [els.projectDialog, els.importDialog, els.meetingDialog, els.snapshotDialog].forEach((dialog) => {
+    if (!dialog || !dialog.open) {
+      return;
+    }
+    if (typeof dialog.close === "function") {
+      dialog.close();
+    } else {
+      dialog.removeAttribute("open");
+    }
+  });
+}
+
+function getOnboardingTarget(step) {
+  const target = document.querySelector(step.target);
+  return target || document.querySelector(".main-shell") || document.body;
+}
+
+function clearOnboardingTarget() {
+  document.querySelectorAll(".onboarding-target").forEach((node) => {
+    node.classList.remove("onboarding-target");
+  });
+}
+
+function renderOnboardingStep() {
+  if (!state.onboardingActive || !els.onboardingLayer) {
+    return;
+  }
+  const step = ONBOARDING_STEPS[state.onboardingIndex];
+  const target = getOnboardingTarget(step);
+  clearOnboardingTarget();
+  target.classList.add("onboarding-target");
+  target.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+
+  els.onboardingCount.textContent = `${state.onboardingIndex + 1} / ${ONBOARDING_STEPS.length}`;
+  els.onboardingTitle.textContent = step.title;
+  els.onboardingCopy.textContent = step.copy;
+  els.onboardingTip.textContent = step.tip;
+  els.onboardingPrev.disabled = state.onboardingIndex === 0;
+  els.onboardingNext.textContent = state.onboardingIndex === ONBOARDING_STEPS.length - 1 ? "完成" : "下一步";
+  els.onboardingFill.style.width = `${((state.onboardingIndex + 1) / ONBOARDING_STEPS.length) * 100}%`;
+
+  window.setTimeout(positionOnboardingCard, 220);
+}
+
+function positionOnboardingCard() {
+  if (!state.onboardingActive || !els.onboardingCard) {
+    return;
+  }
+  const step = ONBOARDING_STEPS[state.onboardingIndex];
+  const target = getOnboardingTarget(step);
+  const rect = target.getBoundingClientRect();
+  if (els.onboardingHighlight) {
+    const pad = 8;
+    els.onboardingHighlight.style.left = `${Math.max(8, rect.left - pad)}px`;
+    els.onboardingHighlight.style.top = `${Math.max(8, rect.top - pad)}px`;
+    els.onboardingHighlight.style.width = `${Math.min(window.innerWidth - 16, rect.width + pad * 2)}px`;
+    els.onboardingHighlight.style.height = `${Math.min(window.innerHeight - 16, rect.height + pad * 2)}px`;
+  }
+  const card = els.onboardingCard;
+  const margin = 18;
+  const cardWidth = Math.min(390, window.innerWidth - margin * 2);
+  const cardHeight = card.offsetHeight || 280;
+  let left = margin;
+  let top = margin;
+
+  if (window.innerWidth <= 760) {
+    left = margin;
+    top = Math.min(window.innerHeight - cardHeight - margin, Math.max(margin, rect.bottom + 12));
+  } else if (step.placement === "right") {
+    left = rect.right + margin;
+    top = rect.top;
+  } else if (step.placement === "top") {
+    left = rect.left;
+    top = rect.top - cardHeight - margin;
+  } else {
+    left = rect.left;
+    top = rect.bottom + margin;
+  }
+
+  left = Math.min(Math.max(margin, left), window.innerWidth - cardWidth - margin);
+  top = Math.min(Math.max(margin, top), window.innerHeight - cardHeight - margin);
+  card.style.width = `${cardWidth}px`;
+  card.style.left = `${left}px`;
+  card.style.top = `${top}px`;
+}
+
+function moveOnboarding(direction) {
+  if (!state.onboardingActive) {
+    return;
+  }
+  const nextIndex = state.onboardingIndex + direction;
+  if (nextIndex >= ONBOARDING_STEPS.length) {
+    completeOnboarding();
+    return;
+  }
+  state.onboardingIndex = clamp(nextIndex, 0, ONBOARDING_STEPS.length - 1);
+  renderOnboardingStep();
+}
+
+function completeOnboarding() {
+  if (!state.onboardingActive) {
+    markOnboardingSeen();
+    return;
+  }
+  markOnboardingSeen();
+  state.onboardingActive = false;
+  clearOnboardingTarget();
+  document.body.classList.remove("onboarding-active");
+  if (els.onboardingLayer) {
+    els.onboardingLayer.hidden = true;
+    els.onboardingLayer.setAttribute("aria-hidden", "true");
+  }
+}
+
+function handleOnboardingKeydown(event) {
+  if (!state.onboardingActive) {
+    return;
+  }
+  if (event.key === "Escape") {
+    completeOnboarding();
+  }
+  if (event.key === "ArrowRight") {
+    moveOnboarding(1);
+  }
+  if (event.key === "ArrowLeft") {
+    moveOnboarding(-1);
+  }
+}
 function openDialog(dialog) {
   if (!dialog) {
     return;
@@ -273,6 +523,8 @@ function getLlmProgressStage(value) {
 function setProjectCreateBusy(isBusy) {
   state.llmProgressActive = isBusy;
   els.projectForm.classList.toggle("is-processing", isBusy);
+
+
   els.projectModeButtons.forEach((button) => {
     button.disabled = isBusy;
   });
