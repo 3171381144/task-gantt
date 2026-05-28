@@ -11,7 +11,7 @@ services:
       SILICONFLOW_MODEL: ${SILICONFLOW_MODEL:-deepseek-ai/DeepSeek-V3.2}
       SILICONFLOW_TIMEOUT_SECONDS: ${SILICONFLOW_TIMEOUT_SECONDS:-45}
     volumes:
-      - task_gantt_data:/app/data
+      - ./data:/app/data
     ports:
       - "127.0.0.1:8010:8010"
     restart: unless-stopped
@@ -31,5 +31,3 @@ services:
       - task-gantt
     restart: unless-stopped
 
-volumes:
-  task_gantt_data:

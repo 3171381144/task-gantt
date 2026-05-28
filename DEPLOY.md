@@ -6,7 +6,7 @@
 
 - `task-gantt`：当前应用容器，监听容器内 `8010`。
 - `task-gantt-frpc`：FRP 客户端容器，连接 Tool-Nexus 的 `frp.aim888888.xyz:7000`。
-- `task_gantt_data`：Docker volume，持久化 `task_gantt.db`。
+- `data/`：服务器项目目录下的持久化数据目录，保存 `task_gantt.db`。
 - Tool-Nexus Portal：负责登录态、白名单和统一入口。
 
 ## 1. 在 Tool-Nexus 里创建网页工具
@@ -107,10 +107,10 @@ docker compose up -d --build
 
 ## 8. 数据备份
 
-数据库在 Docker volume `task_gantt_data` 中。导出备份示例：
+数据库在服务器项目目录的 `data/` 中。导出备份示例：
 
 ```bash
-docker run --rm -v task-gantt_task_gantt_data:/data -v "$PWD":/backup alpine tar czf /backup/task-gantt-data.tar.gz -C /data .
+tar czf task-gantt-data.tar.gz -C data .
 ```
 
-恢复前先停止服务，再把归档解回 volume。
+恢复前先停止服务，再把归档解回 `data/` 目录。
