@@ -6,6 +6,75 @@ const DAY_HEADER_Y = 32;
 const DAY_HEADER_HEIGHT = 34;
 
 const ONBOARDING_STORAGE_KEY = "task-gantt:onboarding:v1";
+const AGENT_PROJECT_PROMPT = `你是一个项目交接与任务拆解 Agent。请完整阅读当前项目仓库，优先查看 README、文档、配置文件、入口文件、主要模块、路由/API、数据库/schema、测试、部署文件和脚本。
+
+目标：把这个项目整理成一份可以直接粘贴到“任务甘特图工具 / LLM 智能拆分创建”里的项目介绍与任务排版材料。
+
+要求：
+1. 不要编造信息。仓库里没有证据的内容请标注“需确认”。
+2. 输出中文。
+3. 保留项目里的真实模块名、文件名、接口名、命令名。
+4. 区分“已完成”“进行中”“待完成”“风险/阻塞”。
+5. 任务要是可执行交付项，不要写成空泛描述。
+6. 每个任务尽量包含：目标、涉及文件/模块、验收标准、依赖关系、建议优先级、复杂度、估时。
+7. 如果仓库里已有 roadmap、TODO、issue、changelog，请优先吸收。
+8. 如果没有明确日期，不要硬编日期，按阶段输出即可。
+9. 最后额外给出一份“可直接粘贴到任务甘特图工具”的精简版。
+
+请按以下格式输出：
+
+# 项目名称
+填写项目名称。
+
+# 一句话介绍
+用一句话说明这个项目解决什么问题。
+
+# 项目背景
+说明项目用途、目标用户、核心场景。
+
+# 当前状态
+- 已完成：
+- 进行中：
+- 待完成：
+- 风险/阻塞：
+
+# 技术栈
+- 前端：
+- 后端：
+- 数据库：
+- 部署：
+- 主要依赖：
+
+# 核心功能模块
+按模块列出：
+1. 模块名称
+   - 作用：
+   - 关键文件：
+   - 当前状态：
+   - 后续工作：
+
+# 建议任务拆解
+请用编号列表输出，每个任务格式如下：
+
+1. 任务标题
+   - 描述：
+   - 涉及模块/文件：
+   - 验收标准：
+   - 依赖任务：
+   - 状态：planned / in_progress / blocked / done
+   - 优先级：1-5
+   - 复杂度：1-5
+   - 估时：小时
+   - 备注：
+
+# 里程碑建议
+- 阶段 1：
+- 阶段 2：
+- 阶段 3：
+
+# 可直接粘贴到任务甘特图工具的版本
+请把上面的内容压缩成清晰的项目描述 + 编号任务列表，适合另一个 LLM 直接解析成任务。`.trim();
+
 
 const ONBOARDING_STEPS = [
   {
@@ -129,6 +198,11 @@ function cacheElements() {
   els.deleteTaskBtn = document.getElementById("delete-task-btn");
   els.exportAllXlsxBtn = document.getElementById("export-all-xlsx-btn");
   els.projectModeButtons = Array.from(document.querySelectorAll("[data-project-mode]"));
+  els.agentPromptTemplate = document.getElementById("agent-prompt-template");
+  els.copyAgentPromptBtn = document.getElementById("copy-agent-prompt-btn");
+  if (els.agentPromptTemplate) {
+    els.agentPromptTemplate.value = AGENT_PROJECT_PROMPT;
+  }
   els.smartImportBtn = document.getElementById("smart-import-btn");
   els.projectDialogCloseButton = els.projectDialog.querySelector('[data-close-dialog="project-dialog"]');
   els.llmProgressPanel = document.getElementById("llm-progress-panel");
@@ -201,6 +275,9 @@ function bindEvents() {
   els.projectModeButtons.forEach((button) => {
     button.addEventListener("click", () => handleProjectCreate(button.dataset.projectMode));
   });
+  if (els.copyAgentPromptBtn) {
+    els.copyAgentPromptBtn.addEventListener("click", handleCopyAgentPrompt);
+  }
 
   els.projectDialog.addEventListener("cancel", (event) => {
     if (state.llmProgressActive) {
@@ -1265,6 +1342,34 @@ function statusColor(status, isSelected = false) {
     blocked: "#c95f67",
     done: "#18855b",
   }[status] || "#6e8093";
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+  if (!els.agentPromptTemplate) {
+    return false;
+  }
+  els.agentPromptTemplate.focus();
+  els.agentPromptTemplate.select();
+  const copied = document.execCommand("copy");
+  els.agentPromptTemplate.setSelectionRange(0, 0);
+  return copied;
+}
+
+async function handleCopyAgentPrompt() {
+  const promptText = (els.agentPromptTemplate?.value || AGENT_PROJECT_PROMPT).trim();
+  if (!promptText) {
+    return;
+  }
+  try {
+    const copied = await copyTextToClipboard(promptText);
+    showToast(copied ? "提示词已复制，可以发给对方项目里的 Agent" : "复制失败，请手动选择文本复制", !copied);
+  } catch (error) {
+    showToast("复制失败，请手动选择文本复制", true);
+  }
 }
 
 async function handleProjectCreate(mode) {

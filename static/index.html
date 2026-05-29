@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Task Gantt Chart</title>
-  <link rel="stylesheet" href="/styles.css?v=onboarding-20260528" />
+  <link rel="stylesheet" href="/styles.css?v=prompt-template-20260529" />
 </head>
 <body>
   <aside class="sidebar-shell">
@@ -201,6 +201,16 @@
         <textarea name="description" rows="6" placeholder="&#21487;&#30452;&#25509;&#31896;&#36148; roadmap / gantt / &#20998;&#38454;&#27573;&#20219;&#21153;&#35828;&#26126;&#65292;LLM &#20250;&#35299;&#26512;&#21518;&#30452;&#25509;&#21019;&#24314;&#39033;&#30446;&#24182;&#29983;&#25104;&#21021;&#22987;&#20219;&#21153;"></textarea>
       </label>
       <p class="field-note">&#26234;&#33021;&#21019;&#24314;&#20250;&#25226;&#36825;&#37324;&#30340;&#25991;&#26412;&#30452;&#25509;&#35299;&#26512;&#25104;&#20219;&#21153;&#24182;&#23548;&#20837;&#26032;&#39033;&#30446;&#65307;&#22914;&#26524;&#21482;&#24819;&#20808;&#24314;&#19968;&#20010;&#31354;&#22771;&#39033;&#30446;&#65292;&#20877;&#28857;&#21491;&#20391;&#30340;&#8220;&#21019;&#24314;&#31354;&#39033;&#30446;&#8221;&#12290;</p>
+      <details class="prompt-template">
+        <summary>给对方 Agent 的项目梳理提示词</summary>
+        <div class="prompt-template-content">
+          <p class="field-note">把这段发给对方项目里的 Agent，让它先读仓库，再输出适合粘贴到这里的项目介绍和任务清单。</p>
+          <textarea id="agent-prompt-template" class="prompt-template-text" rows="14" readonly aria-label="给对方 Agent 的项目梳理提示词"></textarea>
+          <div class="prompt-template-actions">
+            <button type="button" id="copy-agent-prompt-btn">复制提示词</button>
+          </div>
+        </div>
+      </details>
       <div class="form-grid cols-2">
         <label>
           开始日期
@@ -340,7 +350,7 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/app.js?v=onboarding-20260528"></script>
+  <script src="/app.js?v=prompt-template-20260529"></script>
 </body>
 </html>
 

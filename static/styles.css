@@ -830,6 +830,70 @@ tr.task-row.active {
   line-height: 1.55;
 }
 
+.prompt-template {
+  border: 1px solid rgba(13, 45, 76, 0.1);
+  border-radius: 16px;
+  background: rgba(239, 245, 252, 0.72);
+  overflow: hidden;
+}
+
+.prompt-template summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.72rem 0.85rem;
+  cursor: pointer;
+  color: var(--accent);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 800;
+  list-style: none;
+}
+
+.prompt-template summary::-webkit-details-marker {
+  display: none;
+}
+
+.prompt-template summary::after {
+  content: "展开";
+  flex: 0 0 auto;
+  border: 1px solid rgba(13, 45, 76, 0.12);
+  border-radius: 999px;
+  padding: 0.28rem 0.58rem;
+  background: rgba(255, 255, 255, 0.74);
+  color: #4d6683;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.prompt-template[open] summary::after {
+  content: "收起";
+}
+
+.prompt-template-content {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0 0.85rem 0.85rem;
+}
+
+.prompt-template-text {
+  min-height: 260px;
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.prompt-template-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.prompt-template-actions button {
+  padding: 0.58rem 0.86rem;
+}
+
 .import-actions {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
