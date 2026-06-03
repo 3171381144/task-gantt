@@ -44,6 +44,7 @@ HOURS_PER_DAY = 6.0
 ENV_PATH = ROOT / ".env"
 SILICONFLOW_DEFAULT_URL = "https://api.siliconflow.cn/v1/chat/completions"
 SILICONFLOW_DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
+PROJECT_DESCRIPTION_MAX_CHARS = 180
 
 
 def load_env_file(path: Path) -> None:
@@ -511,6 +512,174 @@ OUTLINE_BULLET_RE = re.compile(rf"^\s*[{re.escape(OUTLINE_BULLET_CHAR)}*-]\s*(?P
 
 def contains_cjk(text: str) -> bool:
     return any("一" <= char <= "鿿" for char in str(text or ""))
+
+
+
+PROJECT_SUMMARY_FIELD_LABELS = (
+    "\u4e00\u53e5\u8bdd\u4ecb\u7ecd",
+    "\u9879\u76ee\u7b80\u4ecb",
+    "\u9879\u76ee\u6982\u8ff0",
+    "\u9879\u76ee\u4ecb\u7ecd",
+    "\u6458\u8981",
+    "\u9879\u76ee\u76ee\u6807",
+    "\u76ee\u6807\u7528\u6237",
+    "\u76ee\u6807",
+    "\u9879\u76ee\u80cc\u666f",
+    "\u80cc\u666f",
+)
+PROJECT_SUMMARY_SKIP_PREFIXES = (
+    "\u9879\u76ee\u540d\u79f0",
+    "\u5f53\u524d\u72b6\u6001",
+    "\u5df2\u5b8c\u6210",
+    "\u5f85\u5b8c\u6210",
+    "\u540e\u7eed\u5de5\u4f5c",
+    "\u98ce\u9669",
+    "\u5173\u952e\u6587\u4ef6",
+    "\u4ed3\u5e93",
+    "\u8bf7\u628a",
+)
+RAW_PROJECT_DESCRIPTION_MARKERS = (
+    "# \u9879\u76ee\u540d\u79f0",
+    "\u5f53\u524d\u72b6\u6001",
+    "\u5df2\u5b8c\u6210",
+    "\u5f85\u5b8c\u6210",
+    "\u5173\u952e\u6587\u4ef6",
+    "\u540e\u7eed\u5de5\u4f5c",
+    "README",
+    "schema",
+    "wsl.localhost",
+    "\u8bf7\u628a\u4e0a\u9762\u7684\u5185\u5bb9",
+    "\u4efb\u52a1\u7518\u7279\u56fe\u5de5\u5177",
+    "LLM \u667a\u80fd\u62c6\u5206",
+)
+
+
+def compact_summary_text(text: str) -> str:
+    cleaned = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", str(text or ""))
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned.strip(" \t\r\n#*-" + OUTLINE_BULLET_CHAR)
+
+
+def truncate_project_summary(text: str, max_chars: int = PROJECT_DESCRIPTION_MAX_CHARS) -> str:
+    cleaned = compact_summary_text(text)
+    if len(cleaned) <= max_chars:
+        return cleaned
+    boundary = -1
+    for punctuation in ("\u3002", "\uff1b", ";", "\uff0c", ","):
+        position = cleaned.rfind(punctuation, 0, max_chars + 1)
+        if position >= max(60, max_chars // 2) and position > boundary:
+            boundary = position
+    if boundary > 0:
+        return cleaned[: boundary + 1].rstrip()
+    return cleaned[:max_chars].rstrip("\uff0c,\uff1b; ") + "\u2026"
+
+
+def looks_like_raw_project_material(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    compact = compact_summary_text(raw)
+    if raw.count("\n") >= 2:
+        return True
+    lowered = raw.lower()
+    marker_hits = sum(1 for marker in RAW_PROJECT_DESCRIPTION_MARKERS if marker.lower() in lowered)
+    if marker_hits >= 2:
+        return True
+    if marker_hits and len(compact) > PROJECT_DESCRIPTION_MAX_CHARS:
+        return True
+    return len(compact) > PROJECT_DESCRIPTION_MAX_CHARS * 2
+
+
+def clean_summary_candidate_line(line: str) -> str:
+    cleaned = compact_summary_text(line)
+    cleaned = re.sub(r"^#+\s*", "", cleaned).strip()
+    cleaned = cleaned.strip(OUTLINE_BULLET_CHAR + "*- ")
+    cleaned = re.sub(r"^\u9879\u76ee\u540d\u79f0\s*[^:\uff1a]{0,80}[:\uff1a]\s*", "", cleaned)
+    label_pattern = "|".join(re.escape(label) for label in PROJECT_SUMMARY_FIELD_LABELS)
+    cleaned = re.sub(rf"^(?:{label_pattern})\s*[:\uff1a]?\s*", "", cleaned)
+    return compact_summary_text(cleaned)
+
+
+def is_useful_summary_line(line: str) -> bool:
+    raw_cleaned = compact_summary_text(line)
+    raw_cleaned = re.sub(r"^#+\s*", "", raw_cleaned).strip()
+    if any(raw_cleaned.startswith(prefix) for prefix in PROJECT_SUMMARY_SKIP_PREFIXES):
+        return False
+    cleaned = clean_summary_candidate_line(line)
+    if len(cleaned) < 12:
+        return False
+    lowered = cleaned.lower()
+    if any(token in lowered for token in ("wsl.localhost", "http://", "https://", "//wsl")):
+        return False
+    if re.search(r"(?:^|[\\/\s])[^\s]+\.(?:md|py|js|json|db|xlsx|csv|toml|yml|yaml)\b", lowered):
+        return False
+    if len(re.findall(r"[\\/]", cleaned)) >= 2:
+        return False
+    return not looks_like_raw_project_material(cleaned)
+
+
+def extract_labeled_project_summary(text: str) -> str:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    label_pattern = "|".join(re.escape(label) for label in PROJECT_SUMMARY_FIELD_LABELS)
+    field_re = re.compile(rf"^\s*#*\s*(?P<label>{label_pattern})\s*[:\uff1a]?\s*(?P<body>.*?)\s*$")
+    for index, line in enumerate(lines):
+        match = field_re.match(line.strip(OUTLINE_BULLET_CHAR + "*- "))
+        if not match:
+            continue
+        body = match.group("body").strip()
+        if not body:
+            for next_line in lines[index + 1 : index + 4]:
+                if next_line.startswith("#"):
+                    break
+                if is_useful_summary_line(next_line):
+                    body = next_line
+                    break
+        cleaned = clean_summary_candidate_line(body)
+        if is_useful_summary_line(cleaned):
+            return cleaned
+    return ""
+
+
+def build_project_overview_summary(
+    name: str,
+    source_description: str,
+    tasks: list[dict] | None = None,
+    candidate: str | None = None,
+) -> str:
+    if candidate:
+        candidate_text = str(candidate).strip()
+        if candidate_text and not looks_like_raw_project_material(candidate_text):
+            return truncate_project_summary(candidate_text)
+
+    extracted = extract_labeled_project_summary(source_description)
+    if extracted:
+        summary = extracted
+    else:
+        summary = ""
+        for line in str(source_description or "").splitlines():
+            cleaned = clean_summary_candidate_line(line)
+            if is_useful_summary_line(cleaned):
+                summary = cleaned
+                break
+
+    if summary:
+        if name and name not in summary and len(summary) <= PROJECT_DESCRIPTION_MAX_CHARS - len(name) - 2:
+            summary = f"{name}\uff1a{summary}"
+        return truncate_project_summary(summary)
+
+    task_count = len(tasks or [])
+    task_hint = f"\uff0c\u5df2\u62c6\u89e3 {task_count} \u4e2a\u521d\u59cb\u4efb\u52a1" if task_count else ""
+    category = infer_category(name, source_description)
+    templates = {
+        "web_tool": f"{name}\uff1a\u56f4\u7ed5\u4ea7\u54c1\u529f\u80fd\u3001\u6570\u636e\u7ed3\u6784\u3001\u524d\u540e\u7aef\u5b9e\u73b0\u548c\u4ea4\u4ed8\u9a8c\u6536\u63a8\u8fdb\u9879\u76ee{task_hint}\u3002",
+        "data_project": f"{name}\uff1a\u56f4\u7ed5\u6570\u636e\u6536\u96c6\u3001\u5206\u6790\u5904\u7406\u3001\u7ed3\u679c\u9a8c\u8bc1\u548c\u62a5\u544a\u8f93\u51fa\u63a8\u8fdb\u9879\u76ee{task_hint}\u3002",
+        "content_project": f"{name}\uff1a\u56f4\u7ed5\u53d7\u4f17\u5b9a\u4f4d\u3001\u7ed3\u6784\u7b56\u5212\u3001\u5185\u5bb9\u751f\u4ea7\u548c\u4fee\u8ba2\u4ea4\u4ed8\u63a8\u8fdb\u9879\u76ee{task_hint}\u3002",
+        "general": f"{name}\uff1a\u56f4\u7ed5\u76ee\u6807\u6f84\u6e05\u3001\u4efb\u52a1\u62c6\u89e3\u3001\u6267\u884c\u63a8\u8fdb\u548c\u4ea4\u4ed8\u9a8c\u6536\u7ba1\u7406\u9879\u76ee{task_hint}\u3002",
+    }
+    return truncate_project_summary(templates.get(category, templates["general"]))
 
 
 def looks_like_mermaid_gantt(text: str) -> bool:
@@ -999,7 +1168,9 @@ class SiliconFlowPlanner:
             "and dependency relationships unless the input clearly contradicts them. "
             "Your job is to normalize the project into this system by adding concise descriptions, priority, complexity, "
             "estimate_hours, confidence, and estimate_basis. "
-            "Also produce a short project_description summary suitable for the app overview card."
+            "Also produce project_description as a synthesized overview, not a copy of the input. "
+            "Keep it to one plain sentence, 40-120 Chinese characters or 15-30 English words. "
+            "Do not include Markdown headings, file paths, task lists, status dumps, or links."
         )
         payload = {
             "model": self.model,
@@ -1037,7 +1208,7 @@ class SiliconFlowPlanner:
                                 ],
                                 "output_schema": {
                                     "category": "web_tool",
-                                    "project_description": "A short one-sentence summary for the project overview.",
+                                    "project_description": "A synthesized one-sentence overview for the app card; do not copy the raw input.",
                                     "tasks": [
                                         {
                                             "key": "scope",
@@ -1161,9 +1332,12 @@ class SiliconFlowPlanner:
         else:
             apply_due_date_pressure(tasks, start_date, due_date)
 
-        project_description = str(parsed.get("project_description") or parsed.get("summary") or "").strip()
-        if project_description and len(project_description) > 200:
-            project_description = project_description[:200].rstrip("\uFF0C,\uFF1B; ") + "\u2026"
+        project_description = build_project_overview_summary(
+            name,
+            description,
+            tasks,
+            parsed.get("project_description") or parsed.get("summary") or "",
+        )
 
         return {
             "category": category,
@@ -1395,6 +1569,7 @@ def build_task_suggestions(
         "source": "rules",
         "model": "",
         "note": "\u5DF2\u6309\u672C\u5730\u89C4\u5219\u751F\u6210\u4EFB\u52A1\u5EFA\u8BAE",
+        "project_description": build_project_overview_summary(name, description, fallback_tasks),
     }
     if planner is None:
         if structured_result:
@@ -1418,12 +1593,17 @@ def build_task_suggestions(
             "model": planner.model,
             "note": f"已使用 SiliconFlow - {planner.model} 完成项目解析",
         }
-        project_description = llm_result.get("project_description", "")
+        project_description = build_project_overview_summary(
+            name,
+            description,
+            merged_tasks,
+            llm_result.get("project_description", ""),
+        )
         if structured_result:
             merged_tasks = merge_llm_tasks_with_structured_hint(llm_result["tasks"], structured_result.get("tasks", []))
             payload["tasks"] = merged_tasks
             payload["note"] = f"已使用 SiliconFlow - {planner.model} 完成补充分析，并保留结构化排期"
-            payload["project_description"] = structured_result.get("project_description") or project_description
+            payload["project_description"] = project_description or structured_result.get("project_description")
             payload["start_date"] = structured_result.get("start_date")
             payload["due_date"] = structured_result.get("due_date")
             payload["preserve_schedule"] = structured_result.get("preserve_schedule", False)
@@ -2927,7 +3107,12 @@ class TaskDatabase:
                     "model": suggestion_result.get("model", ""),
                     "note": suggestion_result.get("note", ""),
                 }
-                description = suggestion_result.get("project_description", description)
+                description = build_project_overview_summary(
+                    payload["name"],
+                    description,
+                    suggestions,
+                    suggestion_result.get("project_description", ""),
+                )
                 start_date = suggestion_result.get("start_date", start_date)
                 due_date = suggestion_result.get("due_date", due_date)
                 preserve_schedule = bool(suggestion_result.get("preserve_schedule"))
