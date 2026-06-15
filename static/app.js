@@ -151,6 +151,32 @@ const state = {
 
 const els = {};
 
+const motionQuery = typeof window.matchMedia === "function"
+  ? window.matchMedia("(prefers-reduced-motion: reduce)")
+  : { matches: false };
+
+// Track the last-animated signature per UI region so entrance animations only
+// replay when the underlying data actually changes (not on every re-render).
+const animSignatures = {};
+
+function motionOn() {
+  return typeof window.gsap !== "undefined" && !motionQuery.matches;
+}
+
+// Run `play(gsap)` only when `signature` differs from the last run for `key`.
+// Returns true when the animation was (or will be) played.
+function animateOnChange(key, signature, play) {
+  if (animSignatures[key] === signature) {
+    return false;
+  }
+  animSignatures[key] = signature;
+  if (!motionOn()) {
+    return false;
+  }
+  window.requestAnimationFrame(() => play(window.gsap));
+  return true;
+}
+
 window.addEventListener("DOMContentLoaded", init);
 window.addEventListener("resize", debounce(renderGantt, 80));
 
@@ -560,6 +586,17 @@ function openDialog(dialog) {
     dialog.showModal();
   } else {
     dialog.setAttribute("open", "open");
+  }
+  if (motionOn()) {
+    const card = dialog.querySelector(".modal-form") || dialog;
+    window.gsap.from(card, {
+      autoAlpha: 0,
+      y: 16,
+      scale: 0.97,
+      duration: 0.32,
+      ease: "power2.out",
+      clearProps: "opacity,visibility,transform",
+    });
   }
 }
 
@@ -992,6 +1029,17 @@ function renderProjectList() {
       `;
     })
     .join("");
+
+  const signature = state.projects.map((project) => project.id).join(",");
+  animateOnChange("project-list", signature, (gsap) => {
+    gsap.from(els.projectList.querySelectorAll(".project-item"), {
+      autoAlpha: 0,
+      y: 12,
+      duration: 0.4,
+      ease: "power2.out",
+      stagger: 0.05,
+    });
+  });
 }
 
 function renderDeletedProjectList() {
@@ -1106,6 +1154,17 @@ function renderProjectSummary() {
       </div>
     </div>
   `;
+
+  const signature = `${project.id}:${statCards.map((card) => card[1]).join("|")}`;
+  animateOnChange("summary-cards", signature, (gsap) => {
+    gsap.from(els.projectSummary.querySelectorAll(".stat-card"), {
+      autoAlpha: 0,
+      y: 14,
+      duration: 0.45,
+      ease: "power2.out",
+      stagger: 0.06,
+    });
+  });
 }
 
 function renderTaskTable() {
@@ -1132,6 +1191,17 @@ function renderTaskTable() {
       `;
     })
     .join("");
+
+  const signature = `${getCurrentProject()?.id ?? "none"}:${tasks.map((task) => task.id).join(",")}`;
+  animateOnChange("task-rows", signature, (gsap) => {
+    gsap.from(els.taskTableBody.querySelectorAll(".task-row"), {
+      autoAlpha: 0,
+      y: 10,
+      duration: 0.4,
+      ease: "power2.out",
+      stagger: 0.04,
+    });
+  });
 }
 
 function renderTaskEditor() {
@@ -1329,6 +1399,22 @@ function renderGantt() {
 
   els.ganttSvg.querySelectorAll("[data-bar-id]").forEach((node) => {
     node.addEventListener("click", () => selectTask(Number(node.dataset.taskId)));
+  });
+
+  // Grow the bars in from their left edge, but only when the schedule actually
+  // changes — not on resize re-renders or task selection.
+  const signature = `${getCurrentProject()?.id ?? "none"}:${tasks
+    .map((task) => `${task.id}|${task.start_date}|${task.end_date}|${task.status}`)
+    .join(",")}`;
+  animateOnChange("gantt-bars", signature, (gsap) => {
+    gsap.from(els.ganttSvg.querySelectorAll(".gantt-bar rect"), {
+      scaleX: 0,
+      autoAlpha: 0,
+      transformOrigin: "left center",
+      duration: 0.5,
+      ease: "power3.out",
+      stagger: 0.05,
+    });
   });
 }
 
