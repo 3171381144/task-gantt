@@ -701,24 +701,14 @@ function startImportProgress() {
   els.importProgressPanel.classList.remove("is-error", "is-complete");
   els.importProgressTitle.textContent = "\u6b63\u5728\u667a\u80fd\u8ffd\u52a0\u4efb\u52a1";
   renderImportProgress("\u5df2\u63d0\u4ea4\u6587\u672c\uff0c\u51c6\u5907\u8c03\u7528\u6a21\u578b\u2026");
+}
 
-  state.importProgressTimer = window.setInterval(() => {
-    let next = state.importProgressValue;
-    if (next < 22) {
-      next += 4;
-    } else if (next < 48) {
-      next += 2.8;
-    } else if (next < 74) {
-      next += 1.6;
-    } else if (next < 88) {
-      next += 0.9;
-    }
-    state.importProgressValue = Math.min(88, next);
-    renderImportProgress();
-    if (state.importProgressValue >= 88) {
-      stopImportProgressTimer();
-    }
-  }, 280);
+// Drive the import progress panel from a real server-side job snapshot.
+function applyImportJobProgress(job) {
+  if (typeof job.progress === "number") {
+    state.importProgressValue = Math.max(state.importProgressValue, Math.min(95, job.progress));
+  }
+  renderImportProgress();
 }
 
 async function finishImportProgress(message) {
@@ -787,24 +777,14 @@ function startLlmProgress() {
   els.llmProgressTitle.textContent = "\u6b63\u5728\u7528 LLM \u5206\u6790\u9879\u76ee";
   setProjectCreateBusy(true);
   renderLlmProgress("\u5df2\u63d0\u4ea4\u9879\u76ee\u63cf\u8ff0\uff0c\u51c6\u5907\u8c03\u7528\u6a21\u578b\u2026");
+}
 
-  state.llmProgressTimer = window.setInterval(() => {
-    let next = state.llmProgressValue;
-    if (next < 22) {
-      next += 4;
-    } else if (next < 48) {
-      next += 2.8;
-    } else if (next < 74) {
-      next += 1.6;
-    } else if (next < 88) {
-      next += 0.9;
-    }
-    state.llmProgressValue = Math.min(88, next);
-    renderLlmProgress();
-    if (state.llmProgressValue >= 88) {
-      stopLlmProgressTimer();
-    }
-  }, 280);
+// Drive the project-analysis progress panel from a real server-side job snapshot.
+function applyLlmJobProgress(job) {
+  if (typeof job.progress === "number") {
+    state.llmProgressValue = Math.max(state.llmProgressValue, Math.min(95, job.progress));
+  }
+  renderLlmProgress();
 }
 
 async function finishLlmProgress(message) {
@@ -862,6 +842,33 @@ async function api(path, options = {}) {
   }
   const contentType = response.headers.get("Content-Type") || "";
   return contentType.includes("application/json") ? response.json() : response;
+}
+
+// Submit an LLM-backed request that returns { job_id }, then poll the job until
+// it finishes, reporting real server-side progress via onProgress(job).
+// Resolves with the job's detail payload, or throws on error/timeout.
+async function runLlmJob(path, body, onProgress) {
+  const started = await api(path, { method: "POST", body: JSON.stringify(body) });
+  // Backward-compat: if a server still returns the detail synchronously.
+  if (!started || !started.job_id) {
+    return started;
+  }
+  const jobId = started.job_id;
+  const maxPolls = 225; // ~3 minutes at 800ms
+  for (let attempt = 0; attempt < maxPolls; attempt += 1) {
+    await wait(800);
+    const job = await api(`/api/jobs/${jobId}`);
+    if (typeof onProgress === "function") {
+      onProgress(job);
+    }
+    if (job.status === "done") {
+      return job.detail;
+    }
+    if (job.status === "error") {
+      throw new Error(job.error || "任务执行失败");
+    }
+  }
+  throw new Error("任务超时，请稍后重试");
 }
 
 async function loadBootstrap() {
@@ -1487,10 +1494,9 @@ async function handleProjectCreate(mode) {
   };
 
   try {
-    const detail = await api("/api/projects", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+    const detail = useLlmProgress
+      ? await runLlmJob("/api/projects", payload, applyLlmJobProgress)
+      : await api("/api/projects", { method: "POST", body: JSON.stringify(payload) });
 
     const analysis = detail.analysis || {};
     const importedCount = detail.imported_task_count || detail.tasks?.length || 0;
@@ -1543,12 +1549,9 @@ async function handleMeetingUpdateSubmit(event) {
   const autoSchedule = Boolean(els.meetingForm.elements.auto_schedule.checked);
   setMeetingBusy(true);
   try {
-    const detail = await api(`/api/projects/${project.id}/meeting-update`, {
-      method: "POST",
-      body: JSON.stringify({
-        meeting_text: meetingText,
-        auto_schedule: autoSchedule,
-      }),
+    const detail = await runLlmJob(`/api/projects/${project.id}/meeting-update`, {
+      meeting_text: meetingText,
+      auto_schedule: autoSchedule,
     });
 
     acceptDetail(detail);
@@ -1639,13 +1642,14 @@ async function handleSmartImportSubmit() {
   startImportProgress();
   setImportBusy(true);
   try {
-    const detail = await api(`/api/projects/${project.id}/smart-import`, {
-      method: "POST",
-      body: JSON.stringify({
+    const detail = await runLlmJob(
+      `/api/projects/${project.id}/smart-import`,
+      {
         description: text,
         replace_existing: replaceExisting,
-      }),
-    });
+      },
+      applyImportJobProgress,
+    );
     const importedCount = detail.imported_task_count || 0;
     const analysis = detail.analysis || {};
     const progressMessage = importedCount
