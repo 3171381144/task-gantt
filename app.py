@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
 import base64
+import binascii
 import csv
+import hmac
 import io
 import json
 import math
@@ -9,11 +11,17 @@ import mimetypes
 import os
 import re
 import sqlite3
+import threading
+import time
+import traceback
+import uuid
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
@@ -45,6 +53,56 @@ ENV_PATH = ROOT / ".env"
 SILICONFLOW_DEFAULT_URL = "https://api.siliconflow.cn/v1/chat/completions"
 SILICONFLOW_DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2"
 PROJECT_DESCRIPTION_MAX_CHARS = 180
+
+APP_VERSION = "1.1.0"
+
+# Reject oversized request bodies before reading them into memory. Must comfortably
+# hold a base64-encoded file import (see TaskDatabase.import_tasks).
+MAX_BODY_BYTES = 8 * 1024 * 1024
+
+# Throttle the LLM-backed endpoints so an exposed instance cannot burn API credits.
+LLM_RATE_LIMIT_MAX = 5            # allowed calls per window, per client
+LLM_RATE_LIMIT_WINDOW = 60.0     # seconds
+
+
+class RequestTooLarge(Exception):
+    """Raised when an incoming request body exceeds MAX_BODY_BYTES."""
+
+
+def parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Trust X-Forwarded-For (we sit behind an FRP reverse proxy). Disable if exposed directly.
+TRUST_FORWARDED_FOR = parse_bool_env("TASK_GANTT_TRUST_PROXY", True)
+
+
+class RateLimiter:
+    """Tiny in-memory sliding-window limiter, keyed by client identifier."""
+
+    def __init__(self, max_calls: int, window_seconds: float):
+        self.max_calls = max_calls
+        self.window = window_seconds
+        self._hits: dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            bucket = self._hits[key]
+            while bucket and now - bucket[0] > self.window:
+                bucket.popleft()
+            if len(bucket) >= self.max_calls:
+                return False
+            bucket.append(now)
+            # Opportunistically drop empty buckets to bound memory.
+            if len(self._hits) > 1024:
+                for stale_key in [k for k, v in self._hits.items() if not v]:
+                    del self._hits[stale_key]
+            return True
 
 
 def load_env_file(path: Path) -> None:
@@ -1130,6 +1188,28 @@ class SiliconFlowPlanner:
         timeout_seconds = parse_int(os.getenv("SILICONFLOW_TIMEOUT_SECONDS"), 45)
         return cls(api_key, base_url, model, timeout_seconds)
 
+    def _post_chat(self, payload: dict) -> dict:
+        """POST a chat-completions payload, retrying once on transient network errors."""
+        request = Request(
+            self.base_url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                with urlopen(request, timeout=self.timeout_seconds) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except URLError as exc:  # connection reset / timeout / DNS blip
+                last_error = exc
+                if attempt == 0:
+                    time.sleep(0.8)
+        raise ValueError(f"调用 SiliconFlow 失败（网络或超时）：{last_error}")
+
     def build_task_suggestions(
         self,
         name: str,
@@ -1231,17 +1311,7 @@ class SiliconFlowPlanner:
                 },
             ],
         }
-        request = Request(
-            self.base_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
-        )
-        with urlopen(request, timeout=self.timeout_seconds) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
+        response_payload = self._post_chat(payload)
 
         content = ((((response_payload.get("choices") or [{}])[0]).get("message") or {}).get("content") or "").strip()
         if not content:
@@ -1418,17 +1488,7 @@ class SiliconFlowPlanner:
             ],
         }
 
-        request = Request(
-            self.base_url,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
-        )
-        with urlopen(request, timeout=self.timeout_seconds) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
+        response_payload = self._post_chat(payload)
 
         content = ((((response_payload.get("choices") or [{}])[0]).get("message") or {}).get("content") or "").strip()
         if not content:
@@ -2457,9 +2517,14 @@ class TaskDatabase:
         self._init_db()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(self.db_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        # WAL lets readers and a writer coexist; busy_timeout makes concurrent
+        # writers wait-and-retry instead of failing with "database is locked"
+        # under ThreadingHTTPServer.
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
     def _init_db(self) -> None:
@@ -2545,13 +2610,37 @@ class TaskDatabase:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
                 );
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                );
                 """
             )
-            self._ensure_project_columns(connection)
+            self._run_migrations(connection)
             project_count = connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
             if project_count == 0:
                 self._seed(connection)
             self._ensure_initial_snapshots(connection)
+
+    # Ordered schema migrations. Each step is idempotent so it is safe on both
+    # fresh and pre-existing databases. Append new (version, method) tuples; never
+    # renumber or edit applied ones.
+    @property
+    def _migrations(self) -> list[tuple[int, str]]:
+        return [
+            (1, "_ensure_project_columns"),
+        ]
+
+    def _run_migrations(self, connection: sqlite3.Connection) -> None:
+        applied = {row[0] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()}
+        for version, method_name in self._migrations:
+            if version in applied:
+                continue
+            getattr(self, method_name)(connection)
+            connection.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, now_iso()),
+            )
 
     def _ensure_project_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)").fetchall()}
@@ -3077,7 +3166,7 @@ class TaskDatabase:
             stats["health"] = "planned"
         return stats
 
-    def create_project(self, payload: dict, use_suggestions: bool = False) -> dict:
+    def create_project(self, payload: dict, use_suggestions: bool = False, on_stage=None) -> dict:
         with self.connect() as connection:
             start_date = payload.get("start_date", today_str())
             due_date = payload.get("due_date")
@@ -3093,6 +3182,8 @@ class TaskDatabase:
             suggestions: list[dict] = []
             preserve_schedule = False
             if use_suggestions:
+                if on_stage:
+                    on_stage("llm")
                 suggestion_result = build_task_suggestions(
                     payload["name"],
                     description,
@@ -3100,6 +3191,8 @@ class TaskDatabase:
                     due_date,
                     self.planner,
                 )
+                if on_stage:
+                    on_stage("shape")
                 category = payload.get("category") or suggestion_result["category"]
                 suggestions = suggestion_result["tasks"]
                 analysis = {
@@ -3117,6 +3210,8 @@ class TaskDatabase:
                 due_date = suggestion_result.get("due_date", due_date)
                 preserve_schedule = bool(suggestion_result.get("preserve_schedule"))
 
+            if use_suggestions and on_stage:
+                on_stage("persist")
             project_id = self._insert_project(
                 connection,
                 {
@@ -3479,7 +3574,7 @@ class TaskDatabase:
             self._create_project_snapshot(connection, project_id, "import_tasks", "导入任务后自动快照")
             return self._load_project_detail(connection, project_id)
 
-    def smart_import_tasks(self, project_id: int, payload: dict) -> dict:
+    def smart_import_tasks(self, project_id: int, payload: dict, on_stage=None) -> dict:
         text_input = str(payload.get("description") or payload.get("text") or "").strip()
         if not text_input:
             raise ValueError("\u8bf7\u5148\u63d0\u4f9b\u8981\u89e3\u6790\u7684\u6587\u672c")
@@ -3491,6 +3586,8 @@ class TaskDatabase:
 
             project = dict(project_row)
             replace_existing = parse_bool(payload.get("replace_existing"), False)
+            if on_stage:
+                on_stage("llm")
             suggestion_result = build_task_suggestions(
                 project["name"],
                 text_input,
@@ -3498,6 +3595,8 @@ class TaskDatabase:
                 project.get("due_date"),
                 self.planner,
             )
+            if on_stage:
+                on_stage("shape")
             tasks = suggestion_result.get("tasks") or []
             if not tasks:
                 raise ValueError("\u672a\u80fd\u89e3\u6790\u51fa\u53ef\u5bfc\u5165\u7684\u4efb\u52a1")
@@ -3523,6 +3622,8 @@ class TaskDatabase:
             if not suggestion_result.get("preserve_schedule"):
                 schedule_task_batch(tasks, batch_start)
 
+            if on_stage:
+                on_stage("persist")
             created_ids = self._insert_tasks_for_project(connection, project_id, tasks, sort_offset=sort_offset)
             latest_end = max((parse_date(task.get("end_date")) for task in tasks if task.get("end_date")), default=None)
             project_description = str(project.get("description") or "").strip()
@@ -3558,7 +3659,7 @@ class TaskDatabase:
             return detail
 
 
-    def meeting_update_progress(self, project_id: int, payload: dict) -> dict:
+    def meeting_update_progress(self, project_id: int, payload: dict, on_stage=None) -> dict:
         meeting_text = str(payload.get("meeting_text") or payload.get("text") or "").strip()
         if not meeting_text:
             raise ValueError("请先提供本次会议纪要内容")
@@ -3587,10 +3688,16 @@ class TaskDatabase:
             if not tasks:
                 raise ValueError("当前项目没有任务可更新")
 
+            if on_stage:
+                on_stage("llm")
             llm_result = self.planner.analyze_meeting_updates(dict(project_row), tasks, meeting_text)
+            if on_stage:
+                on_stage("shape")
             raw_updates = llm_result.get("updates") or []
             if not raw_updates:
                 raise ValueError("未从会议内容中识别到可更新的任务进度")
+            if on_stage:
+                on_stage("persist")
 
             task_map = {int(task["id"]): task for task in tasks}
             applied_updates: list[dict] = []
@@ -3910,26 +4017,115 @@ class TaskDatabase:
             )
             return "all_projects_gantt.xlsx", payload, mime
 
+class JobHandle:
+    """Passed to a worker so it can report real progress at stage boundaries."""
+
+    # Coarse progress for each real stage; the model call itself is opaque.
+    STAGE_PROGRESS = {"submit": 10, "llm": 35, "shape": 70, "persist": 90}
+
+    def __init__(self, registry: "JobRegistry", job_id: str):
+        self._registry = registry
+        self._job_id = job_id
+
+    def stage(self, name: str) -> None:
+        self._registry.set_stage(self._job_id, name, JobHandle.STAGE_PROGRESS.get(name, 50))
+
+
+class JobRegistry:
+    """Runs LLM-backed work off the request thread and tracks its progress."""
+
+    RETAIN_SECONDS = 600
+
+    def __init__(self, max_workers: int = 3):
+        self._executor = ThreadPoolExecutor(max_workers=max(1, max_workers))
+        self._jobs: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def submit(self, worker) -> str:
+        job_id = uuid.uuid4().hex
+        with self._lock:
+            self._purge_locked()
+            self._jobs[job_id] = {
+                "status": "queued",
+                "stage": "submit",
+                "progress": 5,
+                "_created": time.monotonic(),
+                "_finished": None,
+            }
+        self._executor.submit(self._run, job_id, worker)
+        return job_id
+
+    def _run(self, job_id: str, worker) -> None:
+        self._update(job_id, status="running", stage="submit", progress=10)
+        try:
+            detail = worker(JobHandle(self, job_id))
+            self._update(job_id, status="done", stage="persist", progress=100, detail=detail, _finished=time.monotonic())
+        except Exception as exc:  # surface a clean message; full trace to the log
+            traceback.print_exc()
+            self._update(job_id, status="error", error=str(exc) or "internal error", _finished=time.monotonic())
+
+    def set_stage(self, job_id: str, stage: str, progress: int) -> None:
+        self._update(job_id, stage=stage, progress=progress)
+
+    def get(self, job_id: str) -> dict | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            return {key: value for key, value in job.items() if not key.startswith("_")}
+
+    def _update(self, job_id: str, **fields) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                job.update(fields)
+
+    def _purge_locked(self) -> None:
+        now = time.monotonic()
+        stale = [jid for jid, job in self._jobs.items()
+                 if job.get("_finished") and now - job["_finished"] > self.RETAIN_SECONDS]
+        for jid in stale:
+            del self._jobs[jid]
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
 class AppServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, server_address, handler_class, db: TaskDatabase):
         super().__init__(server_address, handler_class)
         self.db = db
+        # Optional shared-secret gate (defense-in-depth behind the portal). When
+        # TASK_GANTT_AUTH_TOKEN is unset, the app is fully open (local dev).
+        self.auth_user = os.environ.get("TASK_GANTT_AUTH_USER", "admin")
+        self.auth_token = os.environ.get("TASK_GANTT_AUTH_TOKEN", "").strip()
+        self.llm_rate_limiter = RateLimiter(LLM_RATE_LIMIT_MAX, LLM_RATE_LIMIT_WINDOW)
+        self.jobs = JobRegistry(max_workers=int(os.environ.get("TASK_GANTT_LLM_WORKERS", "3")))
+
+
+# Paths that never require authentication (so container healthchecks work even
+# when the auth gate is enabled).
+PUBLIC_PATHS = {"/api/health"}
 
 
 class TaskGanttHandler(BaseHTTPRequestHandler):
     server_version = "TaskGantt/1.0"
 
     def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        if not self.ensure_authorized(parsed.path):
+            return
         try:
-            parsed = urlparse(self.path)
             if parsed.path.startswith("/api/"):
                 self.handle_api_get(parsed)
             else:
                 self.serve_static(parsed.path)
-        except Exception as exc:  # pragma: no cover - defensive path
-            self.send_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        except RequestTooLarge:
+            self.send_json({"error": "request too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+        except Exception:  # pragma: no cover - defensive path
+            self.report_internal_error()
 
     def do_POST(self) -> None:
         self.handle_api_write("POST")
@@ -3943,10 +4139,46 @@ class TaskGanttHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:  # pragma: no cover - quiet default logging
         print("%s - - [%s] %s" % (self.address_string(), self.log_date_time_string(), format % args))
 
+    def client_key(self) -> str:
+        if TRUST_FORWARDED_FOR:
+            forwarded = self.headers.get("X-Forwarded-For", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
+        return self.client_address[0] if self.client_address else "unknown"
+
+    def ensure_authorized(self, request_path: str) -> bool:
+        token = self.server.auth_token
+        if not token or request_path in PUBLIC_PATHS:
+            return True
+        header = self.headers.get("Authorization", "")
+        if header.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(header[6:].strip()).decode("utf-8", "replace")
+                user, _, supplied = decoded.partition(":")
+            except (binascii.Error, ValueError):
+                user, supplied = "", ""
+            if hmac.compare_digest(user, self.server.auth_user) and hmac.compare_digest(supplied, token):
+                return True
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self.send_header("WWW-Authenticate", 'Basic realm="task-gantt"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
+    def report_internal_error(self) -> None:
+        # Full detail to the server log; only a generic message to the client.
+        traceback.print_exc()
+        try:
+            self.send_json({"error": "internal error"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+        except Exception:  # pragma: no cover - client already gone
+            pass
+
     def read_json_body(self) -> dict:
         content_length = parse_int(self.headers.get("Content-Length"), 0)
         if content_length <= 0:
             return {}
+        if content_length > MAX_BODY_BYTES:
+            raise RequestTooLarge()
         raw = self.rfile.read(content_length)
         return json.loads(raw.decode("utf-8"))
 
@@ -3985,6 +4217,20 @@ class TaskGanttHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
         db: TaskDatabase = self.server.db
+
+        if path == "/api/health":
+            self.send_json({"status": "ok", "version": APP_VERSION, "llm": db.planner is not None})
+            return
+
+        if path.startswith("/api/jobs/"):
+            parts = [part for part in path.strip("/").split("/") if part]
+            if len(parts) == 3:
+                snapshot = self.server.jobs.get(parts[2])
+                if snapshot is None:
+                    self.send_json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
+                else:
+                    self.send_json(snapshot)
+                return
 
         if path == "/api/bootstrap":
             projects = db.list_projects()
@@ -4032,14 +4278,36 @@ class TaskGanttHandler(BaseHTTPRequestHandler):
 
         self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
 
+    def enqueue_llm_job(self, worker) -> None:
+        """Rate-limit, then run an LLM-backed worker off-thread; return 202 + job_id."""
+        if not self.server.llm_rate_limiter.allow(self.client_key()):
+            self.send_json({"error": "rate limited, please retry shortly"}, HTTPStatus.TOO_MANY_REQUESTS)
+            return
+        job_id = self.server.jobs.submit(worker)
+        self.send_json({"job_id": job_id, "status": "queued"}, HTTPStatus.ACCEPTED)
+
     def handle_api_write(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if not self.ensure_authorized(path):
+            return
         db: TaskDatabase = self.server.db
-        body = self.read_json_body()
+        try:
+            body = self.read_json_body()
+        except RequestTooLarge:
+            self.send_json({"error": "request too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        except (ValueError, json.JSONDecodeError):
+            self.send_json({"error": "invalid JSON body"}, HTTPStatus.BAD_REQUEST)
+            return
         try:
             if method == "POST" and path == "/api/projects":
-                detail = db.create_project(body, use_suggestions=bool(body.get("use_suggestions")))
+                if bool(body.get("use_suggestions")):
+                    self.enqueue_llm_job(
+                        lambda handle: db.create_project(body, use_suggestions=True, on_stage=handle.stage)
+                    )
+                    return
+                detail = db.create_project(body, use_suggestions=False)
                 self.send_json(detail, HTTPStatus.CREATED)
                 return
 
@@ -4090,13 +4358,17 @@ class TaskGanttHandler(BaseHTTPRequestHandler):
                 parts = [part for part in path.strip("/").split("/") if part]
                 if len(parts) == 4:
                     project_id = parse_int(parts[2])
-                    self.send_json(db.meeting_update_progress(project_id, body), HTTPStatus.CREATED)
+                    self.enqueue_llm_job(
+                        lambda handle: db.meeting_update_progress(project_id, body, on_stage=handle.stage)
+                    )
                     return
             if method == "POST" and path.startswith("/api/projects/") and path.endswith("/smart-import"):
                 parts = [part for part in path.strip("/").split("/") if part]
                 if len(parts) == 4:
                     project_id = parse_int(parts[2])
-                    self.send_json(db.smart_import_tasks(project_id, body), HTTPStatus.CREATED)
+                    self.enqueue_llm_job(
+                        lambda handle: db.smart_import_tasks(project_id, body, on_stage=handle.stage)
+                    )
                     return
 
             if method == "POST" and path == "/api/tasks":
@@ -4131,6 +4403,9 @@ class TaskGanttHandler(BaseHTTPRequestHandler):
         except sqlite3.IntegrityError as exc:
             self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
+        except Exception:  # pragma: no cover - defensive path
+            self.report_internal_error()
+            return
 
         self.send_json({"error": "unknown endpoint"}, HTTPStatus.NOT_FOUND)
 
@@ -4153,6 +4428,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        server.jobs.shutdown()
         server.server_close()
 
 
