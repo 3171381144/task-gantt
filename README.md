@@ -72,9 +72,35 @@ SILICONFLOW_API_KEY=你的_key
 - `parent` / `父任务`
 - `notes` / `备注`
 
+## 访问鉴权（可选，公网部署建议开启）
+
+应用本身默认不鉴权，方便本地使用。若通过隧道/反代对公网暴露，建议在 `.env` 设置：
+
+```env
+TASK_GANTT_AUTH_TOKEN=一个足够长的随机串
+TASK_GANTT_AUTH_USER=admin   # 可选，默认 admin
+```
+
+设置后浏览器会弹出 Basic Auth 登录框；未设置则完全放行。`/api/health` 始终免鉴权，供容器健康检查使用。
+
+其它可选环境变量见 `.env.example`：`TASK_GANTT_TRUST_PROXY`（是否信任反代的 `X-Forwarded-For`，用于限流识别 IP）、`TASK_GANTT_LLM_WORKERS`（LLM 后台任务并发数）。
+
+## LLM 任务为后台异步执行
+
+智能拆分创建、智能追加导入、会议更新都在后台线程池执行：接口立即返回 `job_id`，前端轮询 `GET /api/jobs/{id}` 显示**真实阶段进度**（提交→调用模型→整理任务→写入），不再是匀速假进度。LLM 端点带有限流，避免被刷爆 API 额度。
+
+## 运行测试
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+覆盖排期/估时/解析等纯函数、数据库闭环、以及鉴权/限流/请求体上限/异步任务等运行时行为。
+
 ## 说明
 
-- 数据库文件默认保存在 `data/task_gantt.db`
+- 数据库文件默认保存在 `data/task_gantt.db`（已开启 WAL，会附带 `-wal`/`-shm` 文件）
 - 首次启动会自动生成一个示例项目
 - `XLSX` 功能依赖 `openpyxl`
 

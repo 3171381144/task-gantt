@@ -12,6 +12,29 @@
 - 验证方式：写明执行过的检查、测试或部署命令。
 - 部署提醒：如果服务器需要 `git pull`、重建容器、迁移数据或修改配置，要明确写出来。
 
+## 2026-06-16
+
+### P0+P1 加固：安全、并发、异步任务与测试
+
+- 变更摘要：
+  - 安全（P0）：新增可选 Basic Auth 鉴权（`TASK_GANTT_AUTH_TOKEN`，未设则放行，`/api/health` 免鉴权）；请求体 8MB 上限（防内存型 DoS）；LLM 端点限流（默认 60s 内 5 次，防烧钱）；内部错误不再把异常详情返回客户端。
+  - 并发（P0）：SQLite 开启 WAL + `busy_timeout`，消除多线程下 “database is locked”。
+  - 异步（P1）：智能拆分创建 / 智能追加 / 会议更新改为后台线程池任务，接口返回 `job_id`，前端轮询 `GET /api/jobs/{id}` 显示真实阶段进度（替换原匀速假进度条）；LLM 调用加一次性网络重试。
+  - 可维护（P1）：Schema 迁移版本化（`schema_migrations` 表）；新增 `GET /api/health`（含版本号）并据此调整容器健康检查；新增 `pytest` 测试层（纯函数 / 数据库闭环 / 鉴权·限流·请求体上限·异步任务）。
+- 涉及代码：
+  - `app.py`：新增 `RateLimiter`、`JobRegistry`/`JobHandle`、Basic Auth 与请求体上限校验、`/api/health` 与 `/api/jobs/{id}` 路由、`_run_migrations`、planner `_post_chat` 重试；三个 LLM 端点改异步并增加 `on_stage` 回调。
+  - `static/app.js`：新增 `runLlmJob` 轮询与 `applyLlmJobProgress`/`applyImportJobProgress`，三个提交流程改为真实进度轮询。
+  - `static/index.html`：静态资源缓存版本号更新为 `p0p1-20260616`。
+  - `docker-compose.yml`：健康检查改打 `/api/health`。
+  - `.env.example`：新增鉴权 / 代理信任 / 并发数环境变量说明。
+  - `tests/`、`requirements-dev.txt`：新增测试套件与开发依赖。
+  - `README.md`、`.gitignore`：补充鉴权 / 异步 / 测试说明，忽略 `.pytest_cache/`。
+- 验证方式：
+  - `python -m py_compile app.py`。
+  - `pip install -r requirements-dev.txt && pytest -q` → 31 passed（含 WAL、迁移、401 鉴权、413 超限、429 限流、异步任务端到端）。
+  - 本地启动后浏览器验证：`/api/health` 返回 `200`；智能创建走 `202 + job_id` → 轮询 `/api/jobs/{id}` 至 `done`，生成 5 个任务；控制台无报错。
+- 部署提醒：服务器拉取最新分支后执行 `docker compose up -d --build`。如需对公网开启登录，在 `.env` 设置 `TASK_GANTT_AUTH_TOKEN`（并按需设 `TASK_GANTT_AUTH_USER`）。WAL 会在 `data/` 下生成 `task_gantt.db-wal`/`-shm`（已被 `.gitignore` 覆盖）。保留服务器本地 `data/`、`.env` 和 `deploy/frpc.toml`。
+
 ## 2026-06-03
 
 ### 智能创建项目概览摘要修复
